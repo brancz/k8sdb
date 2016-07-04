@@ -2,6 +2,7 @@ package couchdb
 
 import (
 	"fmt"
+	"os"
 	"time"
 
 	"k8s.io/kubernetes/pkg/api"
@@ -10,8 +11,7 @@ import (
 	"k8s.io/kubernetes/pkg/client/restclient"
 	"k8s.io/kubernetes/pkg/client/unversioned"
 	"k8s.io/kubernetes/pkg/client/unversioned/clientcmd"
-	"k8s.io/kubernetes/pkg/client/unversioned/remotecommand"
-	remotecommandserver "k8s.io/kubernetes/pkg/kubelet/server/remotecommand"
+	"k8s.io/kubernetes/pkg/kubectl/cmd"
 	"k8s.io/kubernetes/pkg/util/intstr"
 )
 
@@ -26,8 +26,8 @@ type Cluster struct {
 	DatabaseName string
 }
 
-func newCluster(client *unversioned.Client, config *restclient.Config, namespace string) *Cluster {
-	return &Cluster{client, config, namespace, "k8sdb", "couchdb", 3, "couchdb:1.6.1", "test123"}
+func newCluster(client *unversioned.Client, config *restclient.Config, namespace string, databaseName string) *Cluster {
+	return &Cluster{client, config, namespace, "k8sdb", "couchdb", 3, "couchdb:1.6.1", databaseName}
 }
 
 func (c *Cluster) Create() error {
@@ -59,6 +59,8 @@ func (c *Cluster) Create() error {
 	if err != nil {
 		return err
 	}
+
+	time.Sleep(2000 * time.Millisecond)
 
 	err = c.configureReplication()
 	if err != nil {
@@ -134,8 +136,16 @@ func (c *Cluster) ensureDatabaseExists(pod api.Pod) error {
 }
 
 func (c *Cluster) configureSingleReplication(pod api.Pod, otherPod api.Pod) error {
-	return nil
-	//c.podExec(pod, []string{"curl", "-X", "POST", fmt.Sprintf("%s/_replicate", c.databaseUrl("127.0.0.1")), "-d", fmt.Sprintf("{\"source\":\"%s\",\"target\":\"http://%s:5984/%s\",\"continuous\":\"true\"}", c.DatabaseName, otherPod.Status.PodIP, c.DatabaseName), "-H", "\"Content-Type: application/json\""})
+	command := []string{
+		"curl",
+		"-X",
+		"POST",
+		fmt.Sprintf("%s/_replicate", c.databaseUrl("127.0.0.1")), "-d", fmt.Sprintf("{\"source\":\"%s\",\"target\":\"http://%s:5984/%s\",\"continuous\":\"true\"}", c.DatabaseName, otherPod.Status.PodIP, c.DatabaseName),
+		"-H",
+		"\"Content-Type: application/json\"",
+	}
+	fmt.Println(command)
+	return c.podExec(pod, command)
 }
 
 func (c *Cluster) databaseUrl(ip string) string {
@@ -147,29 +157,25 @@ func (c *Cluster) podExec(pod api.Pod, command []string) error {
 	podNamespace := pod.ObjectMeta.Namespace
 	containerName := pod.Spec.Containers[0].Name
 
-	req := c.client.RESTClient.Post().
-		Resource("pods").
-		Name(podName).
-		Namespace(podNamespace).
-		SubResource("exec").
-		Param("container", containerName)
-	req.VersionedParams(&api.PodExecOptions{
-		Container: containerName,
-		Command:   command,
-		Stdin:     false,
-		Stdout:    false,
-		Stderr:    false,
-		TTY:       false,
-	}, api.ParameterCodec)
+	options := &cmd.ExecOptions{
+		In:            nil,
+		Out:           os.Stdout,
+		Err:           os.Stdout,
+		PodName:       podName,
+		ContainerName: containerName,
+		Stdin:         false,
+		TTY:           false,
+		Command:       command,
+		Namespace:     podNamespace,
 
-	fmt.Println(req.URL())
-	exec, err := remotecommand.NewExecutor(c.config, "POST", req.URL())
-
-	if err != nil {
-		return err
+		Executor: &cmd.DefaultRemoteExecutor{},
+		Client:   c.client,
+		Config:   c.config,
 	}
 
-	return exec.Stream(remotecommandserver.SupportedStreamingProtocols, nil, nil, nil, false)
+	fmt.Println(options.Validate())
+	fmt.Println(options.Run())
+	return nil
 }
 
 func (c *Cluster) Delete() error {
@@ -229,7 +235,7 @@ func CreateCluster(namespace string) error {
 		return err
 	}
 
-	err = newCluster(client, config, namespace).Create()
+	err = newCluster(client, config, namespace, namespace).Create()
 	if err != nil {
 		return err
 	}
@@ -244,7 +250,7 @@ func DeleteCluster(namespace string) error {
 		return err
 	}
 
-	err = newCluster(client, config, namespace).Delete()
+	err = newCluster(client, config, namespace, "").Delete()
 	if err != nil {
 		return err
 	}
