@@ -1,6 +1,7 @@
 package couchdb
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"time"
@@ -24,6 +25,12 @@ type Cluster struct {
 	Replicas     int32
 	ImageVersion string
 	DatabaseName string
+}
+
+type ReplicationConfig struct {
+	Source     string `json:"source"`
+	Target     string `json:"target"`
+	Continuous bool   `json:"continuous"`
 }
 
 func newCluster(client *unversioned.Client, config *restclient.Config, namespace string, databaseName string) *Cluster {
@@ -116,9 +123,15 @@ func (c *Cluster) configureReplication() error {
 		return err
 	}
 
-	// configure replication in a full mesh
+	// make sure database exists on all nodes
 	for _, pod := range pods.Items {
 		c.ensureDatabaseExists(pod)
+	}
+
+	time.Sleep(10000 * time.Millisecond)
+
+	// configure replication in a full mesh
+	for _, pod := range pods.Items {
 		for _, otherPod := range pods.Items {
 			if pod.Status.PodIP != otherPod.Status.PodIP {
 				err = c.configureSingleReplication(pod, otherPod)
@@ -135,21 +148,37 @@ func (c *Cluster) ensureDatabaseExists(pod api.Pod) error {
 	return c.podExec(pod, []string{"curl", "-X", "PUT", c.databaseUrl("127.0.0.1")})
 }
 
-func (c *Cluster) configureSingleReplication(pod api.Pod, otherPod api.Pod) error {
-	command := []string{
-		"curl",
-		"-X",
-		"POST",
-		fmt.Sprintf("%s/_replicate", c.databaseUrl("127.0.0.1")), "-d", fmt.Sprintf("{\"source\":\"%s\",\"target\":\"http://%s:5984/%s\",\"continuous\":\"true\"}", c.DatabaseName, otherPod.Status.PodIP, c.DatabaseName),
-		"-H",
-		"\"Content-Type: application/json\"",
-	}
-	fmt.Println(command)
-	return c.podExec(pod, command)
-}
-
 func (c *Cluster) databaseUrl(ip string) string {
 	return fmt.Sprintf("http://%s:5984/%s", ip, c.DatabaseName)
+}
+
+func (c *Cluster) configureSingleReplication(pod api.Pod, otherPod api.Pod) error {
+	replicationConfig := &ReplicationConfig{
+		Source:     c.DatabaseName,
+		Target:     fmt.Sprintf("http://%s:5984/%s", otherPod.Status.PodIP, c.DatabaseName),
+		Continuous: true,
+	}
+	replicationConfigJson, err := json.Marshal(replicationConfig)
+
+	if err != nil {
+		return err
+	}
+
+	command := []string{
+		"curl",
+		"-v",
+		"-X",
+		"POST",
+		"http://127.0.0.1:5984/_replicate",
+		"-d",
+		string(replicationConfigJson),
+		"-H",
+		"Content-Type: application/json",
+	}
+
+	fmt.Printf("%#v\n", command)
+
+	return c.podExec(pod, command)
 }
 
 func (c *Cluster) podExec(pod api.Pod, command []string) error {
@@ -159,8 +188,8 @@ func (c *Cluster) podExec(pod api.Pod, command []string) error {
 
 	options := &cmd.ExecOptions{
 		In:            nil,
-		Out:           os.Stdout,
-		Err:           os.Stdout,
+		Out:           os.Stdout, //new(bytes.Buffer),
+		Err:           os.Stdout, //new(bytes.Buffer),
 		PodName:       podName,
 		ContainerName: containerName,
 		Stdin:         false,
