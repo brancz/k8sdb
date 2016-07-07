@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/uber-go/zap"
+
 	"k8s.io/kubernetes/pkg/api"
 	unversioned_api "k8s.io/kubernetes/pkg/api/unversioned"
 	"k8s.io/kubernetes/pkg/apis/extensions"
@@ -19,6 +21,7 @@ import (
 type Cluster struct {
 	client       *unversioned.Client
 	config       *restclient.Config
+	logger       zap.Logger
 	Namespace    string
 	Heritage     string
 	Name         string
@@ -34,10 +37,21 @@ type ReplicationConfig struct {
 }
 
 func newCluster(client *unversioned.Client, config *restclient.Config, namespace string, databaseName string) *Cluster {
-	return &Cluster{client, config, namespace, "k8sdb", "couchdb", 3, "couchdb:1.6.1", databaseName}
+	return &Cluster{
+		client,
+		config,
+		zap.NewJSON(),
+		namespace,
+		"k8sdb",
+		"couchdb",
+		3,
+		"couchdb:1.6.1",
+		databaseName,
+	}
 }
 
 func (c *Cluster) Create() error {
+	c.LogInfo("Creating cluster")
 	var err error = nil
 
 	_, err = c.client.Namespaces().Create(c.namespaceStruct())
@@ -206,6 +220,7 @@ func (c *Cluster) podExec(pod api.Pod, command []string) error {
 }
 
 func (c *Cluster) Delete() error {
+	c.LogInfo("Deleting cluster")
 	return c.client.Namespaces().Delete(c.Namespace)
 }
 
@@ -269,15 +284,18 @@ func (c *Cluster) deploymentStruct() *extensions.Deployment {
 }
 
 func (c *Cluster) LogInfo(message string) {
-	fmt.Println(message)
+	c.logger.Info(message,
+		zap.String("cluster", c.Namespace),
+	)
 }
 
 func (c *Cluster) LogDebug(message string) {
-	fmt.Println(message)
+	c.logger.Debug(message,
+		zap.String("cluster", c.Namespace),
+	)
 }
 
 func CreateCluster(namespace string) error {
-	fmt.Println(fmt.Sprintf("creating cluster: %s", namespace))
 	client, config, err := k8sClient()
 	if err != nil {
 		return err
@@ -292,7 +310,6 @@ func CreateCluster(namespace string) error {
 }
 
 func DeleteCluster(namespace string) error {
-	fmt.Println(fmt.Sprintf("deleteing cluster: %s", namespace))
 	client, config, err := k8sClient()
 	if err != nil {
 		return err

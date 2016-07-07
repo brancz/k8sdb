@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/flower-pot/k8sdb/couchdb"
 	"github.com/julienschmidt/httprouter"
@@ -13,14 +14,15 @@ func CreateCouchdbCluster(w http.ResponseWriter, r *http.Request, _ httprouter.P
 	clusterName := queryValues.Get("name")
 
 	if clusterName == "" {
-		fmt.Fprint(w, `{"error":"Name must be passed via query params"}`)
+		fmt.Fprint(w, `{"error":"Cluster name must be passed via query params"}`)
 		return
 	}
 
 	err := couchdb.CreateCluster(clusterName)
 	if err != nil {
-		fmt.Println("ERROR!")
-		fmt.Println(err)
+		errJson, _ := json.Marshal(err)
+		fmt.Fprint(w, string(errJson))
+		return
 	}
 
 	fmt.Fprint(w, `{"status":"Creating"}`)
@@ -29,8 +31,9 @@ func CreateCouchdbCluster(w http.ResponseWriter, r *http.Request, _ httprouter.P
 func DeleteCouchdbCluster(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
 	err := couchdb.DeleteCluster(ps.ByName("cluster_id"))
 	if err != nil {
-		fmt.Println("ERROR!")
-		fmt.Println(err)
+		errJson, _ := json.Marshal(err)
+		fmt.Fprint(w, string(errJson))
+		return
 	}
 
 	fmt.Fprint(w, `{"status":"Deleting"}`)
