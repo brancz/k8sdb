@@ -1,9 +1,9 @@
 package couchdb
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"k8s.io/kubernetes/pkg/api"
@@ -38,43 +38,39 @@ func newCluster(client *unversioned.Client, config *restclient.Config, namespace
 }
 
 func (c *Cluster) Create() error {
-	namespace, err := c.client.Namespaces().Create(c.namespaceStruct())
-	fmt.Println("Creating namespace")
-	fmt.Println(namespace)
-	fmt.Println(err)
+	var err error = nil
+
+	_, err = c.client.Namespaces().Create(c.namespaceStruct())
+	c.LogInfo("Creating namespace")
 	if err != nil {
 		return err
 	}
 
-	service, err := c.client.Services(c.Namespace).Create(c.serviceStruct())
-	fmt.Println("Creating service")
-	fmt.Println(service)
-	fmt.Println(err)
+	_, err = c.client.Services(c.Namespace).Create(c.serviceStruct())
+	c.LogInfo("Creating service")
 	if err != nil {
 		return err
 	}
 
-	deployment, err := c.client.Deployments(c.Namespace).Create(c.deploymentStruct())
-	fmt.Println("Creating deployment")
-	fmt.Println(deployment)
-	fmt.Println(err)
+	_, err = c.client.Deployments(c.Namespace).Create(c.deploymentStruct())
+	c.LogInfo("Creating deployment")
 	if err != nil {
 		return err
 	}
 
+	c.LogInfo("Waiting for cluster participants to be running")
 	err = c.waitForClusterToBeRunning()
 	if err != nil {
 		return err
 	}
 
-	time.Sleep(2000 * time.Millisecond)
-
+	c.LogInfo("Configuring replication")
 	err = c.configureReplication()
 	if err != nil {
 		return err
 	}
 
-	fmt.Println("Cluster setup done")
+	c.LogInfo("Cluster setup done")
 
 	return nil
 }
@@ -102,14 +98,13 @@ func (c *Cluster) areClusterParticipantsRunning() (bool, error) {
 	}
 
 	if len(pods.Items) != int(c.Replicas) {
-		fmt.Println("Not all replicas created yet")
+		c.LogDebug("Not all replicas created yet")
 		return false, nil
 	}
 
 	for _, pod := range pods.Items {
-		fmt.Println(pod.Status.Phase)
 		if pod.Status.Phase != "Running" {
-			fmt.Println("At least one pod not running yet")
+			c.LogDebug("At least one pod not running yet")
 			return false, nil
 		}
 	}
@@ -123,12 +118,14 @@ func (c *Cluster) configureReplication() error {
 		return err
 	}
 
+	time.Sleep(5000 * time.Millisecond)
+
 	// make sure database exists on all nodes
 	for _, pod := range pods.Items {
 		c.ensureDatabaseExists(pod)
 	}
 
-	time.Sleep(10000 * time.Millisecond)
+	time.Sleep(5000 * time.Millisecond)
 
 	// configure replication in a full mesh
 	for _, pod := range pods.Items {
@@ -176,8 +173,6 @@ func (c *Cluster) configureSingleReplication(pod api.Pod, otherPod api.Pod) erro
 		"Content-Type: application/json",
 	}
 
-	fmt.Printf("%#v\n", command)
-
 	return c.podExec(pod, command)
 }
 
@@ -188,8 +183,8 @@ func (c *Cluster) podExec(pod api.Pod, command []string) error {
 
 	options := &cmd.ExecOptions{
 		In:            nil,
-		Out:           os.Stdout, //new(bytes.Buffer),
-		Err:           os.Stdout, //new(bytes.Buffer),
+		Out:           new(bytes.Buffer),
+		Err:           new(bytes.Buffer),
 		PodName:       podName,
 		ContainerName: containerName,
 		Stdin:         false,
@@ -202,9 +197,12 @@ func (c *Cluster) podExec(pod api.Pod, command []string) error {
 		Config:   c.config,
 	}
 
-	fmt.Println(options.Validate())
-	fmt.Println(options.Run())
-	return nil
+	err := options.Validate()
+	if err != nil {
+		return err
+	}
+
+	return options.Run()
 }
 
 func (c *Cluster) Delete() error {
@@ -250,11 +248,32 @@ func (c *Cluster) deploymentStruct() *extensions.Deployment {
 					Labels:    map[string]string{"name": c.Name, "heritage": c.Heritage},
 				},
 				Spec: api.PodSpec{
-					Containers: []api.Container{api.Container{Name: c.Name, Image: c.ImageVersion}},
+					Containers: []api.Container{
+						api.Container{
+							Name:  c.Name,
+							Image: c.ImageVersion,
+							LivenessProbe: &api.Probe{
+								Handler: api.Handler{
+									HTTPGet: &api.HTTPGetAction{
+										Path: "/_stats",
+										Port: intstr.IntOrString{IntVal: 5984},
+									},
+								},
+							},
+						},
+					},
 				},
 			},
 		},
 	}
+}
+
+func (c *Cluster) LogInfo(message string) {
+	fmt.Println(message)
+}
+
+func (c *Cluster) LogDebug(message string) {
+	fmt.Println(message)
 }
 
 func CreateCluster(namespace string) error {
